@@ -7,9 +7,40 @@
 //
 
 #import "YSQLog.h"
+#import <libkern/OSAtomic.h>
+#import <execinfo.h>
 
-static void handleRootException( NSException* exception );//系统崩溃回调函数
+NSString *const ExceptionName = @"UncaughtException";
+NSString *const SignalKey = @"SignalKey";
+NSString *const AddressesKey = @"AddressesKey";
+
+const NSInteger SkipAddressCount = 4;
+const NSInteger ReportAddressCount = 5;
+
+
+static void handleRootException(NSException *exception);//系统崩溃回调函数
 static NSString *const LogDirectoryString = @"com.ysq.ysq.errorLog";
+
+/**
+ *  对未能捕获异常的处理
+ *
+ *  @param signal
+ */
+static void mySignalHandler(int signal);
+/**
+ *  未能捕获的异常处理
+ *
+ *  @param exception 异常
+ */
+static void handleUncaughtException(NSException *exception);
+
+/**
+ *  获取崩溃栈信息存入数组
+ *
+ *  @return 崩溃栈错误信息数组
+ */
+static NSArray *getBacktrace();
+
 
 /**
  *  获取日志保存的文件夹路径
@@ -43,34 +74,91 @@ static void uploadLogFileWithPath(NSString *path);
 void YSQLogInit()
 {
     NSSetUncaughtExceptionHandler(handleRootException);
+    
+    //未能捕获的异常
+    signal(SIGABRT, mySignalHandler);
+	signal(SIGILL, mySignalHandler);
+	signal(SIGSEGV, mySignalHandler);
+	signal(SIGFPE, mySignalHandler);
+	signal(SIGBUS, mySignalHandler);
+	signal(SIGPIPE, mySignalHandler);
+    
     uploadLogFile();
 }
 
 
+
 static void handleRootException( NSException* exception )
 {
-    NSString* name = [ exception name ];
-    NSString* reason = [ exception reason ];
-    NSArray* symbols = [ exception callStackSymbols ];
-    NSMutableString* strSymbols = [ [ NSMutableString alloc ] init ];
-    for ( NSString* item in symbols )
-    {
-        [ strSymbols appendString: item ];
-        [ strSymbols appendString: @"\r\n" ];
+    NSString *name = [exception name];
+    NSString *reason = [exception reason];
+    NSArray *symbols = [exception callStackSymbols];
+    NSMutableString *strSymbols = [[NSMutableString alloc]init];
+    for (NSString *item in symbols){
+        [strSymbols appendString:item];
+        [strSymbols appendString:@"\r\n"];
     }
     
-    NSString*   errorInfo = [NSString stringWithFormat:@" *** Terminating app due to uncaught exception %@ , reason: %@  \r\n  *** First throw call stack: \r\n(\r\n  %@\r\n)", name, reason, strSymbols];
+    NSString *errorInfo = [NSString stringWithFormat:@" *** Terminating app due to uncaught exception %@ , reason: %@  \r\n  *** First throw call stack: \r\n(\r\n  %@\r\n)", name, reason, strSymbols];
     
     logToFile(errorInfo);
     
 }
+
+static void mySignalHandler(int signal){
+	
+	NSMutableDictionary *userInfo = [[NSMutableDictionary alloc]init];
+	NSArray *callStack = getBacktrace();
+    
+    userInfo[SignalKey] = @(signal);   //设置异常值
+    userInfo[AddressesKey] = callStack;   //设置地址值
+    
+    NSException *exception = [NSException exceptionWithName:ExceptionName reason:[NSString stringWithFormat:@"Signal %d was raised.",signal] userInfo:userInfo];
+    
+    handleUncaughtException(exception);
+    
+}
+
+
+static void handleUncaughtException(NSException *exception){
+    
+    NSString *name = [exception name];
+    NSString *reason = [exception reason];
+    NSArray *symbols = [[exception userInfo]objectForKey:AddressesKey];
+    NSMutableString *strSymbols = [[NSMutableString alloc]init];
+    for (NSString *item in symbols){
+        [strSymbols appendString:item];
+        [strSymbols appendString:@"\r\n"];
+    }
+    
+    NSString *errorInfo = [NSString stringWithFormat:@" *** Terminating app due to uncaught exception %@ , reason: %@  \r\n  *** First throw call stack: \r\n(\r\n  %@\r\n)", name, reason, strSymbols];
+    
+    logToFile(errorInfo);
+}
+
+
+
+
+static NSArray *getBacktrace(){
+    void *callstack[128];
+    int frames = backtrace(callstack, 128);
+    char **strs = backtrace_symbols(callstack, frames);
+    int i;
+    NSMutableArray *backtrace = [NSMutableArray arrayWithCapacity:frames];
+    for (i = SkipAddressCount;i < SkipAddressCount +ReportAddressCount;i++){
+	 	[backtrace addObject:[NSString stringWithUTF8String:strs[i]]];
+    }
+    free(strs);
+    return backtrace;
+}
+
 
 
 static NSString *getLogDirectory(){
     
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths objectAtIndex:0];
-    documentsDirectory =  [documentsDirectory stringByAppendingPathComponent:LogDirectoryString];
+    documentsDirectory = [documentsDirectory stringByAppendingPathComponent:LogDirectoryString];
     
     NSFileManager *fileManager = [NSFileManager defaultManager];
     BOOL isDir;
@@ -85,7 +173,7 @@ static NSString *getLogDirectory(){
 static NSString *getLogFilePath(){
     
     NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
-    [dateFormatter setDateFormat:@"yyyyMMddHHmmss"];
+    [dateFormatter setDateFormat:@"yyyy-MM-dd_HH:mm:ss"];
     NSString *currentDateStr = [dateFormatter stringFromDate:[NSDate date]];
     
     NSString *t = [NSString stringWithFormat:@"%@/error_%@.txt",getLogDirectory(),currentDateStr];
@@ -97,14 +185,14 @@ static NSString *getLogFilePath(){
 
 static void logToFile(NSString *logString){
     
-    FILE * file = NULL;
+    FILE *file = NULL;
     file = fopen([getLogFilePath() UTF8String],"w");
     if (nil == file) {
         return;
     }
     
-    const char*   ch = [logString UTF8String];
-    int writeResult = fputs(ch, file);
+    const char *ch = [logString UTF8String];
+    int writeResult = fputs(ch,file);
     if (writeResult == EOF) {
 #if DEBUG
         NSLog(@"log write file failed.");
@@ -123,6 +211,9 @@ static void uploadLogFile(){
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         dispatch_apply([array count], dispatch_get_global_queue(0, 0), ^(size_t i) {
             NSString *fullPath = [getLogDirectory() stringByAppendingPathComponent:[array objectAtIndex:i]];
+            if (![fullPath hasSuffix:@".txt"]) {
+                return ;
+            }
             BOOL isDir;
             if ( !([fileManager fileExistsAtPath:fullPath isDirectory:&isDir] && isDir) ){
                 uploadLogFileWithPath(fullPath);
@@ -133,6 +224,7 @@ static void uploadLogFile(){
 }
 
 static void uploadLogFileWithPath(NSString *path){
+    NSLog(@"\n%@\n",path);
     //read path file
     //server upload code
     
