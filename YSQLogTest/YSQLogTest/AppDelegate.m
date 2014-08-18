@@ -14,10 +14,10 @@
 {
     //log init
     YSQLogInit();
-    
     //test
-    NSArray *test = @[];
-    NSLog(@"%@",test[3]);
+    
+    NSArray *test = nil;
+    NSLog(@"%@",test[0]);
     
     //open Library/Caches/com.ysq.ysq.errorLog
     
